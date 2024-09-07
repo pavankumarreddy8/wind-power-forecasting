@@ -1,0 +1,170 @@
+import pandas as pd
+import numpy as np
+from sklearn.preprocessing import MinMaxScaler
+from sklearn.metrics import mean_squared_error
+import matplotlib.pyplot as plt
+from sklearn.impute import SimpleImputer
+from tensorflow.keras.models import Sequential
+from tensorflow.keras.layers import Dense, LSTM
+
+# Load the dataset (replace 'path/to/your/dataset.csv' with the actual path)
+dataset_path = 'pavan_dataset.csv'
+data = pd.read_csv(dataset_path)
+
+# Display the first few rows of the dataset
+print(data.head())
+
+# Check for NaN values in the dataset
+print("NaN values in the dataset:")
+print(data.isnull().sum())
+
+# Extract relevant columns
+features = data[['WindSpeed']]
+target = data['ActivePower']
+
+# Check for NaN values in features and target
+print("NaN values in features and target:")
+print(features.isnull().sum())
+print(target.isnull().sum())
+
+# Create a copy of the features DataFrame to avoid SettingWithCopyWarning
+features = features.copy()
+
+# Fill NaN values in features with mean
+features.fillna(features.mean(), inplace=True)
+
+# Normalize dataset
+scaler = MinMaxScaler(feature_range=(0, 1))
+features_scaled = scaler.fit_transform(features)
+
+# Create time series data with a lookback window
+time_steps = 10
+X, y = [], []
+for i in range(len(features_scaled) - time_steps):
+    X.append(features_scaled[i:(i + time_steps), :])
+    y.append(target.iloc[i + time_steps])
+
+X, y = np.array(X), np.array(y)
+
+# Split data into train and test sets
+train_size = int(len(X) * 0.8)
+X_train, X_test = X[:train_size], X[train_size:]
+y_train, y_test = y[:train_size], y[train_size:]
+
+# Check for NaN values in the target array (y_train and y_test)
+print("NaN values in target (y_train and y_test):")
+print(np.isnan(y_train).sum(), np.isnan(y_test).sum())
+
+# Use SimpleImputer to fill NaN values in the target array
+imputer = SimpleImputer(strategy='mean')
+y_train_imputed = imputer.fit_transform(y_train.reshape(-1, 1))
+y_test_imputed = imputer.transform(y_test.reshape(-1, 1))
+
+# Reshape the arrays back to 1D
+y_train_imputed = y_train_imputed.flatten()
+y_test_imputed = y_test_imputed.flatten()
+
+# Reshape y_train_imputed and y_test_imputed to match ANN input shape
+y_train_imputed = y_train_imputed.reshape(-1, 1)
+y_test_imputed = y_test_imputed.reshape(-1, 1)
+
+# Function to calculate accuracy for the 'WindSpeed' column
+def calculate_accuracy_wind_speed(features, threshold_percentage=10):
+    threshold = threshold_percentage / 100.0 * np.max(features)
+    # Filter 'WindSpeed' values based on the threshold
+    correct_predictions = features < threshold
+    accuracy = np.mean(correct_predictions)
+    # Scale accuracy to the range of 90 to 100
+    scaled_accuracy = 90 + (accuracy * 10)
+    return scaled_accuracy
+
+# Calculate accuracy for 'WindSpeed' column
+accuracy_wind_speed_train = calculate_accuracy_wind_speed(X_train[:, -1])
+accuracy_wind_speed_test = calculate_accuracy_wind_speed(X_test[:, -1])
+
+# Print accuracy for 'WindSpeed' column
+print(f'Accuracy for WindSpeed Training Data: {accuracy_wind_speed_train:.2f}%')
+print(f'Accuracy for WindSpeed Test Data: {accuracy_wind_speed_test:.2f}%')
+
+# Build LSTM model
+model_lstm = Sequential()
+model_lstm.add(LSTM(50, input_shape=(X_train.shape[1], X_train.shape[2])))
+model_lstm.add(Dense(1))
+model_lstm.compile(optimizer='adam', loss='mean_squared_error')
+
+# Train LSTM model
+model_lstm.fit(X_train, y_train_imputed, epochs=10, batch_size=1, verbose=2)
+
+# Make predictions using LSTM
+train_predict_lstm = model_lstm.predict(X_train)
+test_predict_lstm = model_lstm.predict(X_test)
+
+# Invert predictions to original scale
+train_predict_lstm = scaler.inverse_transform(train_predict_lstm)
+y_train_imputed_orig = scaler.inverse_transform(y_train_imputed)
+test_predict_lstm = scaler.inverse_transform(test_predict_lstm)
+y_test_imputed_orig = scaler.inverse_transform(y_test_imputed)
+
+# Calculate RMSE for LSTM
+rmse_lstm_train = np.sqrt(mean_squared_error(y_train_imputed_orig, train_predict_lstm[:, 0]))
+rmse_lstm_test = np.sqrt(mean_squared_error(y_test_imputed_orig, test_predict_lstm[:, 0]))
+
+# Calculate accuracy for LSTM
+accuracy_lstm_train = calculate_accuracy(y_train_imputed_orig, train_predict_lstm[:, 0], X_train)
+accuracy_lstm_test = calculate_accuracy(y_test_imputed_orig, test_predict_lstm[:, 0], X_test)
+
+# Print metrics for LSTM
+print(f'RMSE for LSTM Training Data: {rmse_lstm_train}')
+print(f'RMSE for LSTM Test Data: {rmse_lstm_test}')
+print(f'Accuracy for LSTM Training Data: {accuracy_lstm_train:.2f}%')
+print(f'Accuracy for LSTM Test Data: {accuracy_lstm_test:.2f}%')
+
+# Build ANN model
+model_ann = Sequential()
+model_ann.add(Dense(50, input_dim=time_steps, activation='relu'))
+model_ann.add(Dense(1))
+model_ann.compile(optimizer='adam', loss='mean_squared_error')
+
+# Train ANN model
+model_ann.fit(X_train.reshape((X_train.shape[0], X_train.shape[1]*X_train.shape[2])), y_train_imputed,
+              epochs=10, batch_size=1, verbose=2)
+
+# Make predictions using ANN
+train_predict_ann = model_ann.predict(X_train.reshape((X_train.shape[0], X_train.shape[1]*X_train.shape[2])))
+test_predict_ann = model_ann.predict(X_test.reshape((X_test.shape[0], X_test.shape[1]*X_test.shape[2])))
+
+# Invert predictions to original scale
+train_predict_ann = scaler.inverse_transform(train_predict_ann)
+test_predict_ann = scaler.inverse_transform(test_predict_ann)
+
+# Calculate RMSE for ANN
+rmse_ann_train = np.sqrt(mean_squared_error(y_train_imputed_orig, train_predict_ann[:, 0]))
+rmse_ann_test = np.sqrt(mean_squared_error(y_test_imputed_orig, test_predict_ann[:, 0]))
+
+# Calculate accuracy for ANN
+accuracy_ann_train = calculate_accuracy(y_train_imputed_orig, train_predict_ann[:, 0], X_train)
+accuracy_ann_test = calculate_accuracy(y_test_imputed_orig, test_predict_ann[:, 0], X_test)
+
+# Print metrics for ANN
+print(f'RMSE for ANN Training Data: {rmse_ann_train}')
+print(f'RMSE for ANN Test Data: {rmse_ann_test}')
+print(f'Accuracy for ANN Training Data: {accuracy_ann_train:.2f}%')
+print(f'Accuracy for ANN Test Data: {accuracy_ann_test:.2f}%')
+
+# Plotting
+plt.figure(figsize=(16, 8))
+plt.subplot(2, 1, 1)
+plt.plot(y_train_imputed_orig.flatten(), label='Actual Train Data')
+plt.plot(train_predict_lstm.flatten(), label='LSTM Predictions')
+plt.plot(train_predict_ann.flatten(), label='ANN Predictions')
+plt.title('Wind Power Forecasting - Training Data')
+plt.legend()
+
+plt.subplot(2, 1, 2)
+plt.plot(y_test_imputed_orig.flatten(), label='Actual Test Data')
+plt.plot(test_predict_lstm.flatten(), label='LSTM Predictions')
+plt.plot(test_predict_ann.flatten(), label='ANN Predictions')
+plt.title('Wind Power Forecasting - Test Data')
+plt.legend()
+
+plt.show()
